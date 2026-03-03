@@ -51,19 +51,73 @@
 	let draftWall: Point[] = $state([]);
 	let draftRoom: Point[] = $state([]);
 
+	function degToRad(deg: number): number {
+		return (deg * Math.PI) / 180;
+	}
+
+	function dot(a: Point, b: Point): number {
+		return a.x * b.x + a.y * b.y;
+	}
+
+	function rectCenter(rect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm'>): Point {
+		return { x: rect.x + rect.widthMm / 2, y: rect.y + rect.heightMm / 2 };
+	}
+
+	function rectAxes(angleRad: number): { u: Point; v: Point } {
+		const c = Math.cos(angleRad);
+		const s = Math.sin(angleRad);
+		// u = rotated X axis, v = rotated Y axis.
+		return { u: { x: c, y: s }, v: { x: -s, y: c } };
+	}
+
+	function cornerSigns(hdl: 'nw' | 'ne' | 'sw' | 'se') {
+		const su = hdl.endsWith('e') ? 1 : -1;
+		const sv = hdl.startsWith('s') ? 1 : -1;
+		return { su, sv };
+	}
+
+	function oppositeHandle(hdl: 'nw' | 'ne' | 'sw' | 'se'): 'nw' | 'ne' | 'sw' | 'se' {
+		switch (hdl) {
+			case 'nw':
+				return 'se';
+			case 'se':
+				return 'nw';
+			case 'ne':
+				return 'sw';
+			case 'sw':
+				return 'ne';
+		}
+	}
+
+	function rectCornerWorld(
+		rect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm'>,
+		angleRad: number,
+		hdl: 'nw' | 'ne' | 'sw' | 'se'
+	): Point {
+		const c = rectCenter(rect);
+		const { u, v } = rectAxes(angleRad);
+		const { su, sv } = cornerSigns(hdl);
+		return {
+			x: c.x + su * (rect.widthMm / 2) * u.x + sv * (rect.heightMm / 2) * v.x,
+			y: c.y + su * (rect.widthMm / 2) * u.y + sv * (rect.heightMm / 2) * v.y
+		};
+	}
+
 	type FurnitureDragState =
 		| {
 				kind: 'move';
 				id: string;
 				startWorld: Point;
-				startRect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm'>;
+				startRect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
 		  }
 		| {
 				kind: 'resize';
 				id: string;
 				handle: 'nw' | 'ne' | 'sw' | 'se';
 				startWorld: Point;
-				startRect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm'>;
+				startRect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
+				fixedCorner: Point;
+				grabOffset: Point;
 		  };
 
 	let furnitureDrag: FurnitureDragState | null = $state(null);
@@ -329,10 +383,11 @@
 		if (furnitureDrag) {
 			e.preventDefault();
 			const cur = clientToWorld(e.clientX, e.clientY);
-			const dx = cur.x - furnitureDrag.startWorld.x;
-			const dy = cur.y - furnitureDrag.startWorld.y;
 
 			if (furnitureDrag.kind === 'move') {
+				const dx = cur.x - furnitureDrag.startWorld.x;
+				const dy = cur.y - furnitureDrag.startWorld.y;
+
 				let x = furnitureDrag.startRect.x + dx;
 				let y = furnitureDrag.startRect.y + dy;
 
@@ -360,44 +415,37 @@
 			}
 
 			const minSize = 10;
-			let x = furnitureDrag.startRect.x;
-			let y = furnitureDrag.startRect.y;
-			let w = furnitureDrag.startRect.widthMm;
-			let h = furnitureDrag.startRect.heightMm;
+			const angleRad = degToRad(furnitureDrag.startRect.rotationDeg ?? 0);
+			const { u, v } = rectAxes(angleRad);
 
-			switch (furnitureDrag.handle) {
-				case 'se':
-					w = furnitureDrag.startRect.widthMm + dx;
-					h = furnitureDrag.startRect.heightMm + dy;
-					break;
-				case 'sw':
-					x = furnitureDrag.startRect.x + dx;
-					w = furnitureDrag.startRect.widthMm - dx;
-					h = furnitureDrag.startRect.heightMm + dy;
-					break;
-				case 'ne':
-					y = furnitureDrag.startRect.y + dy;
-					w = furnitureDrag.startRect.widthMm + dx;
-					h = furnitureDrag.startRect.heightMm - dy;
-					break;
-				case 'nw':
-					x = furnitureDrag.startRect.x + dx;
-					y = furnitureDrag.startRect.y + dy;
-					w = furnitureDrag.startRect.widthMm - dx;
-					h = furnitureDrag.startRect.heightMm - dy;
-					break;
-			}
+			// Keep the opposite corner fixed (in world space) and resize in the rotated frame.
+			const desiredCorner: Point = {
+				x: cur.x + furnitureDrag.grabOffset.x,
+				y: cur.y + furnitureDrag.grabOffset.y
+			};
 
-			if (w < minSize) {
-				const delta = minSize - w;
-				w = minSize;
-				if (furnitureDrag.handle === 'sw' || furnitureDrag.handle === 'nw') x -= delta;
-			}
-			if (h < minSize) {
-				const delta = minSize - h;
-				h = minSize;
-				if (furnitureDrag.handle === 'ne' || furnitureDrag.handle === 'nw') y -= delta;
-			}
+			const d: Point = {
+				x: desiredCorner.x - furnitureDrag.fixedCorner.x,
+				y: desiredCorner.y - furnitureDrag.fixedCorner.y
+			};
+
+			const { su, sv } = cornerSigns(furnitureDrag.handle);
+
+			let w = su * dot(d, u);
+			let h = sv * dot(d, v);
+
+			w = Math.max(minSize, w);
+			h = Math.max(minSize, h);
+
+			const draggedCorner: Point = {
+				x: furnitureDrag.fixedCorner.x + su * w * u.x + sv * h * v.x,
+				y: furnitureDrag.fixedCorner.y + su * w * u.y + sv * h * v.y
+			};
+
+			const cx = (furnitureDrag.fixedCorner.x + draggedCorner.x) / 2;
+			const cy = (furnitureDrag.fixedCorner.y + draggedCorner.y) / 2;
+			const x = cx - w / 2;
+			const y = cy - h / 2;
 
 			updateRectFurniture(furnitureDrag.id, { x, y, widthMm: w, heightMm: h });
 			return;
@@ -585,79 +633,112 @@
 	<!-- Furniture -->
 	<g>
 		{#each $planStore.furniture as f (f.id)}
-			{#if f.kind === 'rect'}
+			{#if f.kind === 'rect' && !f.hidden}
 				{@const isSelected = f.id === selectedFurnitureId}
-				<rect
-					role="button"
-					tabindex="-1"
-					aria-label={`Furniture: ${f.name}`}
-					x={f.x}
-					y={f.y}
-					width={f.widthMm}
-					height={f.heightMm}
-					fill={isSelected ? 'rgba(250,204,21,0.20)' : 'rgba(226,232,240,0.12)'}
-					stroke={isSelected ? 'rgba(250,204,21,0.9)' : 'rgba(226,232,240,0.35)'}
-					stroke-width="10"
-					onpointerdown={(e) => {
-						if (tool !== 'select') return;
-						e.preventDefault();
-						e.stopPropagation();
-						onSelectFurniture(f.id);
-						if (!svgEl) return;
-						svgEl.setPointerCapture(e.pointerId);
-						furnitureDrag = {
-							kind: 'move',
-							id: f.id,
-							startWorld: clientToWorld(e.clientX, e.clientY),
-							startRect: { x: f.x, y: f.y, widthMm: f.widthMm, heightMm: f.heightMm }
-						};
-					}}
-				/>
-				<text
-					x={f.x + f.widthMm / 2}
-					y={f.y - 40}
-					fill="rgba(226,232,240,0.8)"
-					font-size="120"
-					text-anchor="middle"
-					pointer-events="none"
-				>
-					{f.name}
-				</text>
+				{@const cx = f.x + f.widthMm / 2}
+				{@const cy = f.y + f.heightMm / 2}
+				<g transform={`rotate(${f.rotationDeg} ${cx} ${cy})`}>
+					<rect
+						role="button"
+						tabindex="-1"
+						aria-label={`Furniture: ${f.name}`}
+						x={f.x}
+						y={f.y}
+						width={f.widthMm}
+						height={f.heightMm}
+						fill={isSelected ? 'rgba(250,204,21,0.20)' : 'rgba(226,232,240,0.12)'}
+						stroke={isSelected ? 'rgba(250,204,21,0.9)' : 'rgba(226,232,240,0.35)'}
+						stroke-width="10"
+						onpointerdown={(e) => {
+							if (tool !== 'select') return;
+							e.preventDefault();
+							e.stopPropagation();
+							onSelectFurniture(f.id);
+							if (!svgEl) return;
+							svgEl.setPointerCapture(e.pointerId);
+							furnitureDrag = {
+								kind: 'move',
+								id: f.id,
+								startWorld: clientToWorld(e.clientX, e.clientY),
+								startRect: {
+									x: f.x,
+									y: f.y,
+									widthMm: f.widthMm,
+									heightMm: f.heightMm,
+									rotationDeg: f.rotationDeg
+								}
+							};
+						}}
+					/>
 
-				{#if isSelected}
-					{@const handleSize = 80}
-					{#each ['nw', 'ne', 'sw', 'se'] as const as hdl (hdl)}
-						{@const hx = hdl.endsWith('e') ? f.x + f.widthMm : f.x}
-						{@const hy = hdl.startsWith('s') ? f.y + f.heightMm : f.y}
-						<rect
-							role="button"
-							tabindex="-1"
-							aria-label={`Resize handle ${hdl}`}
-							x={hx - handleSize / 2}
-							y={hy - handleSize / 2}
-							width={handleSize}
-							height={handleSize}
-							fill="rgba(250,204,21,0.9)"
-							stroke="rgba(2,6,23,0.6)"
-							stroke-width="10"
-							onpointerdown={(e) => {
-								if (tool !== 'select') return;
-								e.preventDefault();
-								e.stopPropagation();
-								onSelectFurniture(f.id);
-								if (!svgEl) return;
-								svgEl.setPointerCapture(e.pointerId);
-								furnitureDrag = {
-									kind: 'resize',
-									id: f.id,
-									handle: hdl,
-									startWorld: clientToWorld(e.clientX, e.clientY),
-									startRect: { x: f.x, y: f.y, widthMm: f.widthMm, heightMm: f.heightMm }
-								};
-							}}
-						/>
-					{/each}
-				{/if}
+					<text
+						x={f.x + f.widthMm / 2}
+						y={f.y - 40}
+						fill="rgba(226,232,240,0.8)"
+						font-size="120"
+						text-anchor="middle"
+						pointer-events="none"
+					>
+						{f.name}
+					</text>
+
+					{#if isSelected}
+						{@const handleSize = 80}
+						{#each ['nw', 'ne', 'sw', 'se'] as const as hdl (hdl)}
+							{@const hx = hdl.endsWith('e') ? f.x + f.widthMm : f.x}
+							{@const hy = hdl.startsWith('s') ? f.y + f.heightMm : f.y}
+							<rect
+								role="button"
+								tabindex="-1"
+								aria-label={`Resize handle ${hdl}`}
+								x={hx - handleSize / 2}
+								y={hy - handleSize / 2}
+								width={handleSize}
+								height={handleSize}
+								fill="rgba(250,204,21,0.9)" 
+								stroke="rgba(2,6,23,0.6)"
+								stroke-width="10"
+								onpointerdown={(e) => {
+									if (tool !== 'select') return;
+									e.preventDefault();
+									e.stopPropagation();
+									onSelectFurniture(f.id);
+									if (!svgEl) return;
+									svgEl.setPointerCapture(e.pointerId);
+
+									const startRect = {
+										x: f.x,
+										y: f.y,
+										widthMm: f.widthMm,
+										heightMm: f.heightMm,
+										rotationDeg: f.rotationDeg
+									};
+									const startWorld = clientToWorld(e.clientX, e.clientY);
+									const angleRad = degToRad(f.rotationDeg ?? 0);
+									const draggedCorner = rectCornerWorld(startRect, angleRad, hdl);
+									const fixedCorner = rectCornerWorld(
+										startRect,
+										angleRad,
+										oppositeHandle(hdl)
+									);
+
+									furnitureDrag = {
+										kind: 'resize',
+										id: f.id,
+										handle: hdl,
+										startWorld,
+										startRect,
+										fixedCorner,
+										grabOffset: {
+											x: draggedCorner.x - startWorld.x,
+											y: draggedCorner.y - startWorld.y
+										}
+									};
+								}}
+							/>
+						{/each}
+					{/if}
+				</g>
 			{/if}
 		{/each}
 	</g>

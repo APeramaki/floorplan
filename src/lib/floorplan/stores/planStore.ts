@@ -50,6 +50,7 @@ export function addRectFurniture(input: {
 	widthMm: number;
 	heightMm: number;
 	rotationDeg?: number;
+	hidden?: boolean;
 }) {
 	const rect: RectFurniture = {
 		kind: 'rect',
@@ -59,7 +60,8 @@ export function addRectFurniture(input: {
 		y: input.y,
 		widthMm: Math.max(1, input.widthMm),
 		heightMm: Math.max(1, input.heightMm),
-		rotationDeg: input.rotationDeg ?? 0
+		rotationDeg: input.rotationDeg ?? 0,
+		hidden: input.hidden ?? false
 	};
 
 	planStore.update((p) => ({ ...p, furniture: [...p.furniture, rect] }));
@@ -82,6 +84,114 @@ export function updateRectFurniture(
 
 export function removeFurniture(id: string) {
 	planStore.update((p) => ({ ...p, furniture: p.furniture.filter((f) => f.id !== id) }));
+}
+
+export function setFurnitureHidden(id: string, hidden: boolean) {
+	planStore.update((p) => ({
+		...p,
+		furniture: p.furniture.map((f) => {
+			if (f.id !== id) return f;
+			if (f.kind !== 'rect') return f;
+			return { ...f, hidden };
+		})
+	}));
+}
+
+export function toggleFurnitureHidden(id: string) {
+	planStore.update((p) => ({
+		...p,
+		furniture: p.furniture.map((f) => {
+			if (f.id !== id) return f;
+			if (f.kind !== 'rect') return f;
+			return { ...f, hidden: !f.hidden };
+		})
+	}));
+}
+
+export function duplicateFurniture(id: string, options?: { dx?: number; dy?: number }) {
+	const dx = options?.dx ?? 200;
+	const dy = options?.dy ?? 200;
+
+	const cur = get(planStore);
+	const f = cur.furniture.find((x) => x.id === id);
+	if (!f) throw new Error('Furniture not found');
+	if (f.kind !== 'rect') throw new Error('Only rect furniture can be duplicated for now');
+
+	const copy: RectFurniture = {
+		...f,
+		id: newId(),
+		x: f.x + dx,
+		y: f.y + dy
+	};
+
+	planStore.update((p) => ({ ...p, furniture: [...p.furniture, copy] }));
+	return copy.id;
+}
+
+export function serializeFurnitureJson(items: Furniture | Furniture[], pretty = true): string {
+	const arr = Array.isArray(items) ? items : [items];
+	return JSON.stringify(arr, null, pretty ? 2 : undefined);
+}
+
+function asBooleanOptional(v: unknown, path: string): boolean | undefined {
+	if (v === undefined || v === null) return undefined;
+	if (typeof v !== 'boolean') throw new Error(`${path} must be a boolean`);
+	return v;
+}
+
+function parseFurnitureItem(raw: unknown, path: string): Furniture {
+	if (!raw || typeof raw !== 'object') throw new Error(`${path} must be an object`);
+	const obj = raw as Record<string, unknown>;
+	const kind = asStringOptional(obj.kind, `${path}.kind`);
+	if (kind !== 'rect') throw new Error(`${path}.kind must be 'rect' for now`);
+
+	return {
+		kind: 'rect',
+		id: asStringOptional(obj.id, `${path}.id`) ?? newId(),
+		name: asStringOptional(obj.name, `${path}.name`) ?? 'Furniture',
+		x: asNumber(obj.x, `${path}.x`),
+		y: asNumber(obj.y, `${path}.y`),
+		widthMm: asNumber(obj.widthMm, `${path}.widthMm`),
+		heightMm: asNumber(obj.heightMm, `${path}.heightMm`),
+		rotationDeg: asNumberOptional(obj.rotationDeg, `${path}.rotationDeg`) ?? 0,
+		hidden: asBooleanOptional(obj.hidden, `${path}.hidden`) ?? false
+	} satisfies RectFurniture;
+}
+
+export function parseFurnitureJson(text: string): Furniture[] {
+	const raw: unknown = JSON.parse(text);
+
+	if (Array.isArray(raw)) {
+		return raw.map((x, i) => parseFurnitureItem(x, `furniture[${i}]`));
+	}
+
+	// Allow copy/pasting a single furniture object.
+	return [parseFurnitureItem(raw, 'furniture')];
+}
+
+export function addFurnitureFromJson(text: string, options?: { dx?: number; dy?: number }) {
+	const dx = options?.dx ?? 0;
+	const dy = options?.dy ?? 0;
+	const items = parseFurnitureJson(text);
+
+	const created: string[] = [];
+	planStore.update((p) => {
+		const appended = items.map((f) => {
+			if (f.kind !== 'rect') throw new Error('Only rect furniture can be pasted for now');
+			const next: RectFurniture = {
+				...f,
+				id: newId(),
+				x: f.x + dx,
+				y: f.y + dy
+			};
+			created.push(next.id);
+			return next;
+		});
+
+		return { ...p, furniture: [...p.furniture, ...appended] };
+	});
+
+	return created;
 }
 
 export function setReferenceImage(img: Omit<ReferenceImage, 'id'> & { id?: string }) {
@@ -190,25 +300,9 @@ function parseWalls(raw: unknown): WallSegment[] {
 }
 
 function parseFurniture(raw: unknown): Furniture[] {
-	if (!Array.isArray(raw)) return [];
-
-	return raw.map((f, idx) => {
-		if (!f || typeof f !== 'object') throw new Error(`furniture[${idx}] must be an object`);
-		const obj = f as Record<string, unknown>;
-		const kind = asStringOptional(obj.kind, `furniture[${idx}].kind`);
-		if (kind !== 'rect') throw new Error(`furniture[${idx}].kind must be 'rect' for now`);
-
-		return {
-			kind: 'rect',
-			id: asStringOptional(obj.id, `furniture[${idx}].id`) ?? newId(),
-			name: asStringOptional(obj.name, `furniture[${idx}].name`) ?? 'Furniture',
-			x: asNumber(obj.x, `furniture[${idx}].x`),
-			y: asNumber(obj.y, `furniture[${idx}].y`),
-			widthMm: asNumber(obj.widthMm, `furniture[${idx}].widthMm`),
-			heightMm: asNumber(obj.heightMm, `furniture[${idx}].heightMm`),
-			rotationDeg: asNumberOptional(obj.rotationDeg, `furniture[${idx}].rotationDeg`) ?? 0
-		} satisfies RectFurniture;
-	});
+	if (raw === undefined || raw === null) return [];
+	if (Array.isArray(raw)) return raw.map((f, idx) => parseFurnitureItem(f, `furniture[${idx}]`));
+	return [parseFurnitureItem(raw, 'furniture')];
 }
 
 function parseReferenceImage(raw: unknown): ReferenceImage | undefined {

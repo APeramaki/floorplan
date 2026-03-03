@@ -8,6 +8,8 @@
 		parsePlanJson,
 		planStore,
 		removeFurniture,
+		duplicateFurniture,
+		toggleFurnitureHidden,
 		removeReferenceImage,
 		resetPlan,
 		scaleRoomsToTargetAreaM2,
@@ -86,13 +88,47 @@
 		return f;
 	}
 
-	function setFurnitureNumber(id: string, field: 'x' | 'y' | 'widthMm' | 'heightMm', v: string) {
+	function duplicateSelected() {
+		const sel = selectedRect();
+		if (!sel) return;
+		try {
+			const newId = duplicateFurniture(sel.id);
+			selectedFurnitureId = newId;
+		} catch (err) {
+			errorMsg = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function toggleHideSelected() {
+		const sel = selectedRect();
+		if (!sel) return;
+		try {
+			toggleFurnitureHidden(sel.id);
+		} catch (err) {
+			errorMsg = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function setFurnitureNumber(
+		id: string,
+		field: 'x' | 'y' | 'widthMm' | 'heightMm' | 'rotationDeg',
+		v: string
+	) {
 		const n = Number(v);
 		if (!Number.isFinite(n)) return;
+
 		if (field === 'widthMm' || field === 'heightMm') {
 			updateRectFurniture(id, { [field]: Math.max(1, n) } as never);
 			return;
 		}
+
+		if (field === 'rotationDeg') {
+			// Normalize to [0, 360)
+			const rot = ((n % 360) + 360) % 360;
+			updateRectFurniture(id, { rotationDeg: rot });
+			return;
+		}
+
 		updateRectFurniture(id, { [field]: n } as never);
 	}
 
@@ -329,12 +365,13 @@
 							<button
 								type="button"
 								class:selected={f.id === selectedFurnitureId}
+								class:hidden={(f.kind === 'rect' && !!f.hidden) as never}
 								onclick={() => {
 									selectedFurnitureId = f.id;
 									tool = 'select';
 								}}
 							>
-								{f.name}
+								{f.name}{f.kind === 'rect' && f.hidden ? ' (hidden)' : ''}
 							</button>
 						</li>
 					{/each}
@@ -405,8 +442,26 @@
 									)}
 							/>
 						</label>
+						<label>
+							Rotation (°)
+							<input
+								type="number"
+								step="1"
+								value={sel.rotationDeg}
+								oninput={(e) =>
+									setFurnitureNumber(
+										sel.id,
+										'rotationDeg',
+										(e.currentTarget as HTMLInputElement).value
+									)}
+							/>
+						</label>
 					</div>
 					<div class="field">
+						<button type="button" onclick={duplicateSelected}>Duplicate</button>
+						<button type="button" onclick={toggleHideSelected}>
+							{sel.hidden ? 'Show' : 'Hide'}
+						</button>
 						<button
 							type="button"
 							onclick={() => {
@@ -593,7 +648,7 @@
 	.main {
 		flex: 1;
 		display: grid;
-		grid-template-columns: 1fr 280px;
+		grid-template-columns: 1fr 360px;
 		min-height: 0;
 	}
 
@@ -656,6 +711,11 @@
 	ul.list button {
 		width: 100%;
 		text-align: left;
+	}
+
+	ul.list button.hidden {
+		opacity: 0.65;
+		text-decoration: line-through;
 	}
 
 	label {

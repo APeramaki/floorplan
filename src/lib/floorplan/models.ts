@@ -32,6 +32,7 @@ export type RectFurniture = {
 	widthMm: Mm;
 	heightMm: Mm;
 	rotationDeg: number;
+	hidden?: boolean;
 };
 
 export type CircleFurniture = {
