@@ -42,6 +42,7 @@ export type CircleFurniture = {
 	cx: Mm;
 	cy: Mm;
 	radiusMm: Mm;
+	hidden?: boolean;
 };
 
 export type PolygonFurniture = {
@@ -50,6 +51,7 @@ export type PolygonFurniture = {
 	name: string;
 	points: Point[];
 	rotationDeg: number;
+	hidden?: boolean;
 };
 
 export type Furniture = RectFurniture | CircleFurniture | PolygonFurniture;

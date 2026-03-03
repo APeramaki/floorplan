@@ -2,9 +2,11 @@ import { get, writable } from 'svelte/store';
 
 import { polygonAreaMm2 } from '../geometry';
 import type {
+	CircleFurniture,
 	Furniture,
 	Plan,
 	Point,
+	PolygonFurniture,
 	RectFurniture,
 	ReferenceImage,
 	Room,
@@ -68,6 +70,46 @@ export function addRectFurniture(input: {
 	return rect.id;
 }
 
+export function addCircleFurniture(input: {
+	name?: string;
+	cx: number;
+	cy: number;
+	radiusMm: number;
+	hidden?: boolean;
+}) {
+	const circle: CircleFurniture = {
+		kind: 'circle',
+		id: newId(),
+		name: input.name?.trim() ? input.name.trim() : 'Circle',
+		cx: input.cx,
+		cy: input.cy,
+		radiusMm: Math.max(1, input.radiusMm),
+		hidden: input.hidden ?? false
+	};
+
+	planStore.update((p) => ({ ...p, furniture: [...p.furniture, circle] }));
+	return circle.id;
+}
+
+export function addPolygonFurniture(input: {
+	name?: string;
+	points: Point[];
+	rotationDeg?: number;
+	hidden?: boolean;
+}) {
+	const poly: PolygonFurniture = {
+		kind: 'polygon',
+		id: newId(),
+		name: input.name?.trim() ? input.name.trim() : 'Polygon',
+		points: input.points,
+		rotationDeg: input.rotationDeg ?? 0,
+		hidden: input.hidden ?? false
+	};
+
+	planStore.update((p) => ({ ...p, furniture: [...p.furniture, poly] }));
+	return poly.id;
+}
+
 export function updateRectFurniture(
 	id: string,
 	patch: Partial<Omit<RectFurniture, 'id' | 'kind'>>
@@ -82,6 +124,34 @@ export function updateRectFurniture(
 	}));
 }
 
+export function updateCircleFurniture(
+	id: string,
+	patch: Partial<Omit<CircleFurniture, 'id' | 'kind'>>
+) {
+	planStore.update((p) => ({
+		...p,
+		furniture: p.furniture.map((f) => {
+			if (f.id !== id) return f;
+			if (f.kind !== 'circle') return f;
+			return { ...f, ...patch };
+		})
+	}));
+}
+
+export function updatePolygonFurniture(
+	id: string,
+	patch: Partial<Omit<PolygonFurniture, 'id' | 'kind'>>
+) {
+	planStore.update((p) => ({
+		...p,
+		furniture: p.furniture.map((f) => {
+			if (f.id !== id) return f;
+			if (f.kind !== 'polygon') return f;
+			return { ...f, ...patch };
+		})
+	}));
+}
+
 export function removeFurniture(id: string) {
 	planStore.update((p) => ({ ...p, furniture: p.furniture.filter((f) => f.id !== id) }));
 }
@@ -91,7 +161,6 @@ export function setFurnitureHidden(id: string, hidden: boolean) {
 		...p,
 		furniture: p.furniture.map((f) => {
 			if (f.id !== id) return f;
-			if (f.kind !== 'rect') return f;
 			return { ...f, hidden };
 		})
 	}));
@@ -102,7 +171,6 @@ export function toggleFurnitureHidden(id: string) {
 		...p,
 		furniture: p.furniture.map((f) => {
 			if (f.id !== id) return f;
-			if (f.kind !== 'rect') return f;
 			return { ...f, hidden: !f.hidden };
 		})
 	}));
@@ -115,14 +183,27 @@ export function duplicateFurniture(id: string, options?: { dx?: number; dy?: num
 	const cur = get(planStore);
 	const f = cur.furniture.find((x) => x.id === id);
 	if (!f) throw new Error('Furniture not found');
-	if (f.kind !== 'rect') throw new Error('Only rect furniture can be duplicated for now');
 
-	const copy: RectFurniture = {
-		...f,
-		id: newId(),
-		x: f.x + dx,
-		y: f.y + dy
-	};
+	const copy: Furniture =
+		f.kind === 'rect'
+			? {
+				...f,
+				id: newId(),
+				x: f.x + dx,
+				y: f.y + dy
+			}
+			: f.kind === 'circle'
+				? {
+					...f,
+					id: newId(),
+					cx: f.cx + dx,
+					cy: f.cy + dy
+				}
+				: {
+					...f,
+					id: newId(),
+					points: f.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+				};
 
 	planStore.update((p) => ({ ...p, furniture: [...p.furniture, copy] }));
 	return copy.id;
@@ -143,19 +224,48 @@ function parseFurnitureItem(raw: unknown, path: string): Furniture {
 	if (!raw || typeof raw !== 'object') throw new Error(`${path} must be an object`);
 	const obj = raw as Record<string, unknown>;
 	const kind = asStringOptional(obj.kind, `${path}.kind`);
-	if (kind !== 'rect') throw new Error(`${path}.kind must be 'rect' for now`);
 
-	return {
-		kind: 'rect',
-		id: asStringOptional(obj.id, `${path}.id`) ?? newId(),
-		name: asStringOptional(obj.name, `${path}.name`) ?? 'Furniture',
-		x: asNumber(obj.x, `${path}.x`),
-		y: asNumber(obj.y, `${path}.y`),
-		widthMm: asNumber(obj.widthMm, `${path}.widthMm`),
-		heightMm: asNumber(obj.heightMm, `${path}.heightMm`),
-		rotationDeg: asNumberOptional(obj.rotationDeg, `${path}.rotationDeg`) ?? 0,
-		hidden: asBooleanOptional(obj.hidden, `${path}.hidden`) ?? false
-	} satisfies RectFurniture;
+	if (kind === 'rect') {
+		return {
+			kind: 'rect',
+			id: asStringOptional(obj.id, `${path}.id`) ?? newId(),
+			name: asStringOptional(obj.name, `${path}.name`) ?? 'Furniture',
+			x: asNumber(obj.x, `${path}.x`),
+			y: asNumber(obj.y, `${path}.y`),
+			widthMm: asNumber(obj.widthMm, `${path}.widthMm`),
+			heightMm: asNumber(obj.heightMm, `${path}.heightMm`),
+			rotationDeg: asNumberOptional(obj.rotationDeg, `${path}.rotationDeg`) ?? 0,
+			hidden: asBooleanOptional(obj.hidden, `${path}.hidden`) ?? false
+		} satisfies RectFurniture;
+	}
+
+	if (kind === 'circle') {
+		return {
+			kind: 'circle',
+			id: asStringOptional(obj.id, `${path}.id`) ?? newId(),
+			name: asStringOptional(obj.name, `${path}.name`) ?? 'Circle',
+			cx: asNumber(obj.cx, `${path}.cx`),
+			cy: asNumber(obj.cy, `${path}.cy`),
+			radiusMm: asNumber(obj.radiusMm, `${path}.radiusMm`),
+			hidden: asBooleanOptional(obj.hidden, `${path}.hidden`) ?? false
+		} satisfies CircleFurniture;
+	}
+
+	if (kind === 'polygon') {
+		const ptsRaw = obj.points;
+		if (!Array.isArray(ptsRaw)) throw new Error(`${path}.points must be an array`);
+		const points = ptsRaw.map((p, i) => parsePoint(p, `${path}.points[${i}]`));
+		return {
+			kind: 'polygon',
+			id: asStringOptional(obj.id, `${path}.id`) ?? newId(),
+			name: asStringOptional(obj.name, `${path}.name`) ?? 'Polygon',
+			points,
+			rotationDeg: asNumberOptional(obj.rotationDeg, `${path}.rotationDeg`) ?? 0,
+			hidden: asBooleanOptional(obj.hidden, `${path}.hidden`) ?? false
+		} satisfies PolygonFurniture;
+	}
+
+	throw new Error(`${path}.kind must be 'rect', 'circle' or 'polygon'`);
 }
 
 export function parseFurnitureJson(text: string): Furniture[] {
@@ -177,13 +287,27 @@ export function addFurnitureFromJson(text: string, options?: { dx?: number; dy?:
 	const created: string[] = [];
 	planStore.update((p) => {
 		const appended = items.map((f) => {
-			if (f.kind !== 'rect') throw new Error('Only rect furniture can be pasted for now');
-			const next: RectFurniture = {
-				...f,
-				id: newId(),
-				x: f.x + dx,
-				y: f.y + dy
-			};
+			const next: Furniture =
+				f.kind === 'rect'
+					? {
+						...f,
+						id: newId(),
+						x: f.x + dx,
+						y: f.y + dy
+					}
+					: f.kind === 'circle'
+						? {
+							...f,
+							id: newId(),
+							cx: f.cx + dx,
+							cy: f.cy + dy
+						}
+						: {
+							...f,
+							id: newId(),
+							points: f.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+						};
+
 			created.push(next.id);
 			return next;
 		});

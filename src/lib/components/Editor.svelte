@@ -2,29 +2,34 @@
 	import { get } from 'svelte/store';
 
 	import { polygonAreaMm2 } from '$lib/floorplan/geometry';
-	import type { RectFurniture, ToolMode } from '$lib/floorplan/models';
+	import type { CircleFurniture, Furniture, PolygonFurniture, RectFurniture, ToolMode } from '$lib/floorplan/models';
 	import type { ReferenceImage } from '$lib/floorplan/models';
 	import {
+		addPolygonFurniture,
+		duplicateFurniture,
 		parsePlanJson,
 		planStore,
 		removeFurniture,
-		duplicateFurniture,
-		toggleFurnitureHidden,
 		removeReferenceImage,
 		resetPlan,
 		scaleRoomsToTargetAreaM2,
 		setReferenceImage,
+		toggleFurnitureHidden,
+		updateCircleFurniture,
+		updatePolygonFurniture,
 		updateRectFurniture,
 		updateReferenceImage,
 		setPlan
 	} from '$lib/floorplan/stores/planStore';
 
+	import CustomShapeDialog from './CustomShapeDialog.svelte';
 	import PlanSvg from './PlanSvg.svelte';
 
 	let tool: ToolMode = $state('select');
 	let errorMsg: string | null = $state(null);
 
 	let selectedFurnitureId: string | undefined = $state(undefined);
+	let showCustomShapeDialog = $state(false);
 
 	let newRectName = $state('Sofa');
 	let newRectWidthMm = $state(800);
@@ -82,14 +87,28 @@
 		return $planStore.rooms.reduce((acc, r) => acc + polygonAreaMm2(r.polygon), 0);
 	}
 
-	function selectedRect(): RectFurniture | undefined {
-		const f = $planStore.furniture.find((x) => x.id === selectedFurnitureId);
-		if (!f || f.kind !== 'rect') return undefined;
-		return f;
+	function selectedFurniture(): Furniture | undefined {
+		return $planStore.furniture.find((x) => x.id === selectedFurnitureId);
+	}
+
+	function updateSelectedName(name: string) {
+		const sel = selectedFurniture();
+		if (!sel) return;
+		switch (sel.kind) {
+			case 'rect':
+				updateRectFurniture(sel.id, { name });
+				return;
+			case 'circle':
+				updateCircleFurniture(sel.id, { name });
+				return;
+			case 'polygon':
+				updatePolygonFurniture(sel.id, { name });
+				return;
+		}
 	}
 
 	function duplicateSelected() {
-		const sel = selectedRect();
+		const sel = selectedFurniture();
 		if (!sel) return;
 		try {
 			const newId = duplicateFurniture(sel.id);
@@ -100,10 +119,39 @@
 	}
 
 	function toggleHideSelected() {
-		const sel = selectedRect();
+		const sel = selectedFurniture();
 		if (!sel) return;
 		try {
 			toggleFurnitureHidden(sel.id);
+		} catch (err) {
+			errorMsg = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	function setCircleNumber(id: string, field: 'cx' | 'cy' | 'radiusMm', v: string) {
+		const n = Number(v);
+		if (!Number.isFinite(n)) return;
+		if (field === 'radiusMm') {
+			updateCircleFurniture(id, { radiusMm: Math.max(1, n) });
+			return;
+		}
+		updateCircleFurniture(id, { [field]: n } as never);
+	}
+
+	function setPolygonNumber(id: string, field: 'rotationDeg', v: string) {
+		const n = Number(v);
+		if (!Number.isFinite(n)) return;
+		const rot = ((n % 360) + 360) % 360;
+		updatePolygonFurniture(id, { rotationDeg: rot });
+	}
+
+	function onCreateCustomShape(shape: { name: string; points: { x: number; y: number }[] }) {
+		errorMsg = null;
+		try {
+			const id = addPolygonFurniture({ name: shape.name, points: shape.points, rotationDeg: 0 });
+			selectedFurnitureId = id;
+			tool = 'select';
+			showCustomShapeDialog = false;
 		} catch (err) {
 			errorMsg = err instanceof Error ? err.message : String(err);
 		}
@@ -354,6 +402,7 @@
 					<input type="number" min="1" step="10" bind:value={newRectHeightMm} />
 				</label>
 				<button type="button" onclick={() => (tool = 'place-rect')}>Place</button>
+				<button type="button" onclick={() => (showCustomShapeDialog = true)}>Custom shape…</button>
 			</div>
 
 			{#if $planStore.furniture.length === 0}
@@ -365,98 +414,145 @@
 							<button
 								type="button"
 								class:selected={f.id === selectedFurnitureId}
-								class:hidden={(f.kind === 'rect' && !!f.hidden) as never}
+								class:hidden={!!f.hidden}
 								onclick={() => {
 									selectedFurnitureId = f.id;
 									tool = 'select';
 								}}
 							>
-								{f.name}{f.kind === 'rect' && f.hidden ? ' (hidden)' : ''}
+								{f.name} [{f.kind}]{f.hidden ? ' (hidden)' : ''}
 							</button>
 						</li>
 					{/each}
 				</ul>
 
-				{@const sel = selectedRect()}
+				{@const sel = selectedFurniture()}
 				{#if sel}
 					<h2>Selected furniture</h2>
+
 					<div class="grid">
 						<label>
 							Name
 							<input
 								type="text"
 								value={sel.name}
-								oninput={(e) =>
-									updateRectFurniture(sel.id, {
-										name: (e.currentTarget as HTMLInputElement).value
-									} as never)}
+								oninput={(e) => updateSelectedName((e.currentTarget as HTMLInputElement).value)}
 							/>
 						</label>
-						<label>
-							X (mm)
-							<input
-								type="number"
-								step="10"
-								value={sel.x}
-								oninput={(e) =>
-									setFurnitureNumber(sel.id, 'x', (e.currentTarget as HTMLInputElement).value)}
-							/>
-						</label>
-						<label>
-							Y (mm)
-							<input
-								type="number"
-								step="10"
-								value={sel.y}
-								oninput={(e) =>
-									setFurnitureNumber(sel.id, 'y', (e.currentTarget as HTMLInputElement).value)}
-							/>
-						</label>
-						<label>
-							Width (mm)
-							<input
-								type="number"
-								min="1"
-								step="10"
-								value={sel.widthMm}
-								oninput={(e) =>
-									setFurnitureNumber(
-										sel.id,
-										'widthMm',
-										(e.currentTarget as HTMLInputElement).value
-									)}
-							/>
-						</label>
-						<label>
-							Height (mm)
-							<input
-								type="number"
-								min="1"
-								step="10"
-								value={sel.heightMm}
-								oninput={(e) =>
-									setFurnitureNumber(
-										sel.id,
-										'heightMm',
-										(e.currentTarget as HTMLInputElement).value
-									)}
-							/>
-						</label>
-						<label>
-							Rotation (°)
-							<input
-								type="number"
-								step="1"
-								value={sel.rotationDeg}
-								oninput={(e) =>
-									setFurnitureNumber(
-										sel.id,
-										'rotationDeg',
-										(e.currentTarget as HTMLInputElement).value
-									)}
-							/>
-						</label>
+
+						{#if sel.kind === 'rect'}
+							<label>
+								X (mm)
+								<input
+									type="number"
+									step="10"
+									value={sel.x}
+									oninput={(e) =>
+										setFurnitureNumber(sel.id, 'x', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+							<label>
+								Y (mm)
+								<input
+									type="number"
+									step="10"
+									value={sel.y}
+									oninput={(e) =>
+										setFurnitureNumber(sel.id, 'y', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+							<label>
+								Width (mm)
+								<input
+									type="number"
+									min="1"
+									step="10"
+									value={sel.widthMm}
+									oninput={(e) =>
+										setFurnitureNumber(
+											sel.id,
+											'widthMm',
+											(e.currentTarget as HTMLInputElement).value
+										)}
+								/>
+							</label>
+							<label>
+								Height (mm)
+								<input
+									type="number"
+									min="1"
+									step="10"
+									value={sel.heightMm}
+									oninput={(e) =>
+										setFurnitureNumber(
+											sel.id,
+											'heightMm',
+											(e.currentTarget as HTMLInputElement).value
+										)}
+								/>
+							</label>
+							<label>
+								Rotation (°)
+								<input
+									type="number"
+									step="1"
+									value={sel.rotationDeg}
+									oninput={(e) =>
+										setFurnitureNumber(
+											sel.id,
+											'rotationDeg',
+											(e.currentTarget as HTMLInputElement).value
+										)}
+								/>
+							</label>
+						{:else if sel.kind === 'circle'}
+							<label>
+								CX (mm)
+								<input
+									type="number"
+									step="10"
+									value={sel.cx}
+									oninput={(e) => setCircleNumber(sel.id, 'cx', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+							<label>
+								CY (mm)
+								<input
+									type="number"
+									step="10"
+									value={sel.cy}
+									oninput={(e) => setCircleNumber(sel.id, 'cy', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+							<label>
+								Radius (mm)
+								<input
+									type="number"
+									min="1"
+									step="10"
+									value={sel.radiusMm}
+									oninput={(e) =>
+										setCircleNumber(sel.id, 'radiusMm', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+						{:else}
+							<label>
+								Rotation (°)
+								<input
+									type="number"
+									step="1"
+									value={sel.rotationDeg}
+									oninput={(e) =>
+										setPolygonNumber(sel.id, 'rotationDeg', (e.currentTarget as HTMLInputElement).value)}
+								/>
+							</label>
+							<label>
+								Points
+								<input type="text" value={String(sel.points.length)} disabled />
+							</label>
+						{/if}
 					</div>
+
 					<div class="field">
 						<button type="button" onclick={duplicateSelected}>Duplicate</button>
 						<button type="button" onclick={toggleHideSelected}>
@@ -591,6 +687,10 @@
 		</aside>
 	</main>
 </div>
+
+{#if showCustomShapeDialog}
+	<CustomShapeDialog onCancel={() => (showCustomShapeDialog = false)} onCreate={onCreateCustomShape} />
+{/if}
 
 <style>
 	.editor {

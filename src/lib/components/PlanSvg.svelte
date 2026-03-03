@@ -11,12 +11,21 @@
 		polygonCentroid,
 		snapToPoints
 	} from '$lib/floorplan/geometry';
-	import type { Point, RectFurniture, ToolMode, ViewBox } from '$lib/floorplan/models';
+	import type {
+		CircleFurniture,
+		Point,
+		PolygonFurniture,
+		RectFurniture,
+		ToolMode,
+		ViewBox
+	} from '$lib/floorplan/models';
 	import {
 		addRectFurniture,
 		addRoom,
 		addWall,
 		planStore,
+		updateCircleFurniture,
+		updatePolygonFurniture,
 		updateRectFurniture
 	} from '$lib/floorplan/stores/planStore';
 
@@ -103,12 +112,17 @@
 		};
 	}
 
+	type FurnitureMoveStart =
+		| { kind: 'rect'; rect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm' | 'rotationDeg'> }
+		| { kind: 'circle'; circle: Pick<CircleFurniture, 'cx' | 'cy'> }
+		| { kind: 'polygon'; polygon: Pick<PolygonFurniture, 'points' | 'rotationDeg'> };
+
 	type FurnitureDragState =
 		| {
 				kind: 'move';
 				id: string;
 				startWorld: Point;
-				startRect: Pick<RectFurniture, 'x' | 'y' | 'widthMm' | 'heightMm' | 'rotationDeg'>;
+				start: FurnitureMoveStart;
 		  }
 		| {
 				kind: 'resize';
@@ -388,29 +402,44 @@
 				const dx = cur.x - furnitureDrag.startWorld.x;
 				const dy = cur.y - furnitureDrag.startWorld.y;
 
-				let x = furnitureDrag.startRect.x + dx;
-				let y = furnitureDrag.startRect.y + dy;
+				if (furnitureDrag.start.kind === 'rect') {
+					let x = furnitureDrag.start.rect.x + dx;
+					let y = furnitureDrag.start.rect.y + dy;
 
-				// Snap to nearest wall segment when the rect center gets close.
-				const center: Point = {
-					x: x + furnitureDrag.startRect.widthMm / 2,
-					y: y + furnitureDrag.startRect.heightMm / 2
-				};
-				const tol = snapToleranceMm();
+					// Snap to nearest wall segment when the rect center gets close.
+					const center: Point = {
+						x: x + furnitureDrag.start.rect.widthMm / 2,
+						y: y + furnitureDrag.start.rect.heightMm / 2
+					};
+					const tol = snapToleranceMm();
 
-				let best: { pt: Point; dist: number } | null = null;
-				for (const w of $planStore.walls) {
-					const pt = closestPointOnSegmentMm(center, w.a, w.b);
-					const dist = distanceMm(center, pt);
-					if (!best || dist < best.dist) best = { pt, dist };
+					let best: { pt: Point; dist: number } | null = null;
+					for (const w of $planStore.walls) {
+						const pt = closestPointOnSegmentMm(center, w.a, w.b);
+						const dist = distanceMm(center, pt);
+						if (!best || dist < best.dist) best = { pt, dist };
+					}
+
+					if (best && best.dist <= tol) {
+						x += best.pt.x - center.x;
+						y += best.pt.y - center.y;
+					}
+
+					updateRectFurniture(furnitureDrag.id, { x, y });
+					return;
 				}
 
-				if (best && best.dist <= tol) {
-					x += best.pt.x - center.x;
-					y += best.pt.y - center.y;
+				if (furnitureDrag.start.kind === 'circle') {
+					updateCircleFurniture(furnitureDrag.id, {
+						cx: furnitureDrag.start.circle.cx + dx,
+						cy: furnitureDrag.start.circle.cy + dy
+					});
+					return;
 				}
 
-				updateRectFurniture(furnitureDrag.id, { x, y });
+				updatePolygonFurniture(furnitureDrag.id, {
+					points: furnitureDrag.start.polygon.points.map((p) => ({ x: p.x + dx, y: p.y + dy }))
+				});
 				return;
 			}
 
@@ -633,11 +662,13 @@
 	<!-- Furniture -->
 	<g>
 		{#each $planStore.furniture as f (f.id)}
-			{#if f.kind === 'rect' && !f.hidden}
+			{#if !f.hidden}
 				{@const isSelected = f.id === selectedFurnitureId}
-				{@const cx = f.x + f.widthMm / 2}
-				{@const cy = f.y + f.heightMm / 2}
-				<g transform={`rotate(${f.rotationDeg} ${cx} ${cy})`}>
+
+				{#if f.kind === 'rect'}
+					{@const cx = f.x + f.widthMm / 2}
+					{@const cy = f.y + f.heightMm / 2}
+					<g transform={`rotate(${f.rotationDeg} ${cx} ${cy})`}>
 					<rect
 						role="button"
 						tabindex="-1"
@@ -660,12 +691,15 @@
 								kind: 'move',
 								id: f.id,
 								startWorld: clientToWorld(e.clientX, e.clientY),
-								startRect: {
-									x: f.x,
-									y: f.y,
-									widthMm: f.widthMm,
-									heightMm: f.heightMm,
-									rotationDeg: f.rotationDeg
+								start: {
+									kind: 'rect',
+									rect: {
+										x: f.x,
+										y: f.y,
+										widthMm: f.widthMm,
+										heightMm: f.heightMm,
+										rotationDeg: f.rotationDeg
+									}
 								}
 							};
 						}}
@@ -738,7 +772,84 @@
 							/>
 						{/each}
 					{/if}
-				</g>
+					</g>
+				{:else if f.kind === 'circle'}
+					<circle
+						role="button"
+						tabindex="-1"
+						aria-label={`Furniture: ${f.name}`}
+						cx={f.cx}
+						cy={f.cy}
+						r={f.radiusMm}
+						fill={isSelected ? 'rgba(250,204,21,0.20)' : 'rgba(226,232,240,0.10)'}
+						stroke={isSelected ? 'rgba(250,204,21,0.9)' : 'rgba(226,232,240,0.35)'}
+						stroke-width="10"
+						onpointerdown={(e) => {
+							if (tool !== 'select') return;
+							e.preventDefault();
+							e.stopPropagation();
+							onSelectFurniture(f.id);
+							if (!svgEl) return;
+							svgEl.setPointerCapture(e.pointerId);
+							furnitureDrag = {
+								kind: 'move',
+								id: f.id,
+								startWorld: clientToWorld(e.clientX, e.clientY),
+								start: { kind: 'circle', circle: { cx: f.cx, cy: f.cy } }
+							};
+						}}
+					/>
+					<text
+						x={f.cx}
+						y={f.cy - f.radiusMm - 40}
+						fill="rgba(226,232,240,0.8)"
+						font-size="120"
+						text-anchor="middle"
+						pointer-events="none"
+					>
+						{f.name}
+					</text>
+				{:else}
+					{@const c = f.points.length >= 3 ? polygonCentroid(f.points) : f.points[0] ?? { x: 0, y: 0 }}
+					<g transform={`rotate(${f.rotationDeg} ${c.x} ${c.y})`}>
+						<polygon
+							role="button"
+							tabindex="-1"
+							aria-label={`Furniture: ${f.name}`}
+							points={f.points.map((p) => `${p.x},${p.y}`).join(' ')}
+							fill={isSelected ? 'rgba(250,204,21,0.15)' : 'rgba(226,232,240,0.08)'}
+							stroke={isSelected ? 'rgba(250,204,21,0.9)' : 'rgba(226,232,240,0.35)'}
+							stroke-width="10"
+							onpointerdown={(e) => {
+								if (tool !== 'select') return;
+								e.preventDefault();
+								e.stopPropagation();
+								onSelectFurniture(f.id);
+								if (!svgEl) return;
+								svgEl.setPointerCapture(e.pointerId);
+								furnitureDrag = {
+									kind: 'move',
+									id: f.id,
+									startWorld: clientToWorld(e.clientX, e.clientY),
+									start: {
+										kind: 'polygon',
+										polygon: { points: f.points, rotationDeg: f.rotationDeg }
+									}
+								};
+							}}
+						/>
+						<text
+							x={c.x}
+							y={c.y}
+							fill="rgba(226,232,240,0.8)"
+							font-size="120"
+							text-anchor="middle"
+							pointer-events="none"
+						>
+							{f.name}
+						</text>
+					</g>
+				{/if}
 			{/if}
 		{/each}
 	</g>
